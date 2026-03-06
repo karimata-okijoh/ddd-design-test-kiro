@@ -644,9 +644,9 @@ public interface IAuditLogRepository
     Task<PagedResult<AuditLog>> GetByDateRangeAsync(DateTime startDate, DateTime endDate, int pageNumber, int pageSize, CancellationToken cancellationToken = default);
 }
 
-// 注意: IAuditLogRepositoryはIRepository<AuditLog>を継承していますが、
-// UpdateAsync、DeleteAsyncメソッドは実装で例外をスローして不変性を保証します。
-// DbContextレベルでもSaveChangesInterceptorで二重保護を実施します。
+// 注意: IAuditLogRepositoryは不変性保証のため、AddAsyncと読み取り専用メソッドのみを提供します。
+// UpdateAsync、DeleteAsyncメソッドは意図的に提供していません。
+// DbContextレベルでもSaveChangesInterceptorで監査ログの変更・削除を防止します。
 ```
 
 #### Domain Events
@@ -1616,13 +1616,13 @@ erDiagram
 
 任意のテナント識別子に対して、その識別子を持つテナントが既に存在する場合、同じ識別子で新しいテナントを作成しようとするとビジネス例外が発生する
 
-**Validates: Requirements 1.4, 12.1**
+**Validates: Requirements 1.5, 12.1**
 
 ### Property 5: テナント作成時の自動フィールド設定
 
 任意の有効なテナント情報に対して、テナントを作成すると、CreatedAtフィールドに現在日時が設定され、IsActiveフィールドがtrueに設定される
 
-**Validates: Requirements 1.5**
+**Validates: Requirements 1.6**
 
 ### Property 6: テナントIDによる取得のラウンドトリップ
 
@@ -1833,6 +1833,12 @@ erDiagram
 任意の監査ログに対して、一度作成されたログは変更または削除できない（読み取り専用）
 
 **Validates: Requirements 13.5, 13.6**
+
+### Property 41: テナント識別子の小文字正規化
+
+任意の英大文字を含むテナント識別子に対して、TenantIdentifier を作成すると、値が小文字に正規化されて保存される
+
+**Validates: Requirements 1.4**
 
 
 ## Error Handling
