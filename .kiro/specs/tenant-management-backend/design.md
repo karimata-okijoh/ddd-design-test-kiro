@@ -418,11 +418,8 @@ public class Tenant : Entity<Guid>, IAggregateRoot
         AddDomainEvent(new TenantUpdatedEvent(Id));
     }
     
-    public void UpdateIdentifier(TenantIdentifier newIdentifier)
-    {
-        // 要件3.3: テナント識別子の変更を許可しない
-        throw new DomainException("Tenant identifier cannot be changed after creation");
-    }
+    // 注意: テナント識別子の変更は許可しない（要件3.3）
+    // UpdateIdentifier メソッドは提供しないことでドメインルールを表現
     
     public void Deactivate()
     {
@@ -537,6 +534,32 @@ public enum SettingValueType
 #### ITenantRepository Interface
 
 ```csharp
+// 共通の基底リポジトリインターフェース
+public interface IRepository<T> where T : class
+{
+    // 基本的なCRUD操作の共通インターフェース
+}
+
+// ページング結果を表すクラス
+public class PagedResult<T>
+{
+    public IReadOnlyList<T> Items { get; }
+    public int TotalCount { get; }
+    public int PageNumber { get; }
+    public int PageSize { get; }
+    public int TotalPages => (int)Math.Ceiling(TotalCount / (double)PageSize);
+    public bool HasPreviousPage => PageNumber > 1;
+    public bool HasNextPage => PageNumber < TotalPages;
+    
+    public PagedResult(IReadOnlyList<T> items, int totalCount, int pageNumber, int pageSize)
+    {
+        Items = items;
+        TotalCount = totalCount;
+        PageNumber = pageNumber;
+        PageSize = pageSize;
+    }
+}
+
 public interface ITenantRepository : IRepository<Tenant>
 {
     Task<Tenant> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
@@ -619,9 +642,11 @@ public interface IAuditLogRepository
     Task<PagedResult<AuditLog>> GetByUserAsync(Guid userId, int pageNumber, int pageSize, CancellationToken cancellationToken = default);
     Task<PagedResult<AuditLog>> GetByTenantAsync(Guid tenantId, int pageNumber, int pageSize, CancellationToken cancellationToken = default);
     Task<PagedResult<AuditLog>> GetByDateRangeAsync(DateTime startDate, DateTime endDate, int pageNumber, int pageSize, CancellationToken cancellationToken = default);
-    
-    // 注意: UpdateAsync、DeleteAsync は意図的に提供しない（不変性保証）
 }
+
+// 注意: IAuditLogRepositoryはIRepository<AuditLog>を継承していますが、
+// UpdateAsync、DeleteAsyncメソッドは実装で例外をスローして不変性を保証します。
+// DbContextレベルでもSaveChangesInterceptorで二重保護を実施します。
 ```
 
 #### Domain Events
@@ -677,26 +702,64 @@ public class TenantContext : ITenantContext
 #### Application Service Example
 
 ```csharp
+// 監査ログ情報を取得するヘルパークラス
+public class AuditContextHelper
+{
+    private readonly IHttpContextAccessor _httpContextAccessor;
+    
+    public AuditContextHelper(IHttpContextAccessor httpContextAccessor)
+    {
+        _httpContextAccessor = httpContextAccessor;
+    }
+    
+    public Guid? GetCurrentUserId()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        var userIdClaim = httpContext?.User?.FindFirst(ClaimTypes.NameIdentifier);
+        return userIdClaim != null && Guid.TryParse(userIdClaim.Value, out var userId) 
+            ? userId 
+            : null;
+    }
+    
+    public string GetCurrentUserName()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        return httpContext?.User?.Identity?.Name ?? "Anonymous";
+    }
+    
+    public string GetIpAddress()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        return httpContext?.Connection?.RemoteIpAddress?.ToString();
+    }
+    
+    public string GetUserAgent()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        return httpContext?.Request?.Headers["User-Agent"].ToString();
+    }
+}
+
 public class TenantApplicationService
 {
     private readonly ITenantRepository _tenantRepository;
     private readonly IAuditLogRepository _auditLogRepository;
     private readonly IUnitOfWork _unitOfWork;
     private readonly ITenantContext _tenantContext;
-    private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly AuditContextHelper _auditContextHelper;
     
     public TenantApplicationService(
         ITenantRepository tenantRepository,
         IAuditLogRepository auditLogRepository,
         IUnitOfWork unitOfWork,
         ITenantContext tenantContext,
-        IHttpContextAccessor httpContextAccessor)
+        AuditContextHelper auditContextHelper)
     {
         _tenantRepository = tenantRepository;
         _auditLogRepository = auditLogRepository;
         _unitOfWork = unitOfWork;
         _tenantContext = tenantContext;
-        _httpContextAccessor = httpContextAccessor;
+        _auditContextHelper = auditContextHelper;
     }
     
     public async Task<TenantDto> CreateTenantAsync(CreateTenantCommand command, CancellationToken cancellationToken)
@@ -714,11 +777,16 @@ public class TenantApplicationService
         await _tenantRepository.AddAsync(tenant, cancellationToken);
         
         // 監査ログを同一トランザクション内で記録
-        var auditLog = CreateAuditLog(
+        var auditLog = AuditLog.Create(
+            userId: _auditContextHelper.GetCurrentUserId(),
+            userName: _auditContextHelper.GetCurrentUserName(),
+            tenantId: _tenantContext.TenantId,
             entityType: nameof(Tenant),
             entityId: tenant.Id,
             action: AuditAction.Created,
-            changes: $"Created tenant: {tenant.Name}");
+            changes: $"Created tenant: {tenant.Name}",
+            ipAddress: _auditContextHelper.GetIpAddress(),
+            userAgent: _auditContextHelper.GetUserAgent());
         
         await _auditLogRepository.AddAsync(auditLog, cancellationToken);
         
@@ -726,49 +794,6 @@ public class TenantApplicationService
         await _unitOfWork.CommitAsync(cancellationToken);
         
         return TenantDto.FromEntity(tenant);
-    }
-    
-    private AuditLog CreateAuditLog(string entityType, Guid? entityId, AuditAction action, string changes)
-    {
-        var httpContext = _httpContextAccessor.HttpContext;
-        var userId = GetCurrentUserId(httpContext);
-        var userName = GetCurrentUserName(httpContext);
-        var ipAddress = GetIpAddress(httpContext);
-        var userAgent = GetUserAgent(httpContext);
-        
-        return AuditLog.Create(
-            userId: userId,
-            userName: userName,
-            tenantId: _tenantContext.TenantId,
-            entityType: entityType,
-            entityId: entityId,
-            action: action,
-            changes: changes,
-            ipAddress: ipAddress,
-            userAgent: userAgent);
-    }
-    
-    private Guid? GetCurrentUserId(HttpContext httpContext)
-    {
-        var userIdClaim = httpContext?.User?.FindFirst(ClaimTypes.NameIdentifier);
-        return userIdClaim != null && Guid.TryParse(userIdClaim.Value, out var userId) 
-            ? userId 
-            : null;
-    }
-    
-    private string GetCurrentUserName(HttpContext httpContext)
-    {
-        return httpContext?.User?.Identity?.Name ?? "Anonymous";
-    }
-    
-    private string GetIpAddress(HttpContext httpContext)
-    {
-        return httpContext?.Connection?.RemoteIpAddress?.ToString();
-    }
-    
-    private string GetUserAgent(HttpContext httpContext)
-    {
-        return httpContext?.Request?.Headers["User-Agent"].ToString();
     }
     
     // 他のメソッド...
@@ -788,16 +813,16 @@ public class AuditService : IAuditService
 {
     private readonly IAuditLogRepository _auditLogRepository;
     private readonly ITenantContext _tenantContext;
-    private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly AuditContextHelper _auditContextHelper;
     
     public AuditService(
         IAuditLogRepository auditLogRepository,
         ITenantContext tenantContext,
-        IHttpContextAccessor httpContextAccessor)
+        AuditContextHelper auditContextHelper)
     {
         _auditLogRepository = auditLogRepository;
         _tenantContext = tenantContext;
-        _httpContextAccessor = httpContextAccessor;
+        _auditContextHelper = auditContextHelper;
     }
     
     public async Task LogAsync(
@@ -807,48 +832,19 @@ public class AuditService : IAuditService
         string changes,
         CancellationToken cancellationToken = default)
     {
-        var httpContext = _httpContextAccessor.HttpContext;
-        var userId = GetCurrentUserId(httpContext);
-        var userName = GetCurrentUserName(httpContext);
-        var ipAddress = GetIpAddress(httpContext);
-        var userAgent = GetUserAgent(httpContext);
-        
         var auditLog = AuditLog.Create(
-            userId: userId,
-            userName: userName,
+            userId: _auditContextHelper.GetCurrentUserId(),
+            userName: _auditContextHelper.GetCurrentUserName(),
             tenantId: _tenantContext.TenantId,
             entityType: entityType,
             entityId: entityId,
             action: action,
             changes: changes,
-            ipAddress: ipAddress,
-            userAgent: userAgent);
+            ipAddress: _auditContextHelper.GetIpAddress(),
+            userAgent: _auditContextHelper.GetUserAgent());
         
         await _auditLogRepository.AddAsync(auditLog, cancellationToken);
         // 注意: コミットは呼び出し元で行う（トランザクション境界を呼び出し元が制御）
-    }
-    
-    private Guid? GetCurrentUserId(HttpContext httpContext)
-    {
-        var userIdClaim = httpContext?.User?.FindFirst(ClaimTypes.NameIdentifier);
-        return userIdClaim != null && Guid.TryParse(userIdClaim.Value, out var userId) 
-            ? userId 
-            : null;
-    }
-    
-    private string GetCurrentUserName(HttpContext httpContext)
-    {
-        return httpContext?.User?.Identity?.Name ?? "Anonymous";
-    }
-    
-    private string GetIpAddress(HttpContext httpContext)
-    {
-        return httpContext?.Connection?.RemoteIpAddress?.ToString();
-    }
-    
-    private string GetUserAgent(HttpContext httpContext)
-    {
-        return httpContext?.Request?.Headers["User-Agent"].ToString();
     }
 }
 ```
@@ -941,6 +937,7 @@ public class JwtClaimTenantResolver : ITenantResolver
 }
 
 // Composite パターンで複数の戦略を試行
+// 優先順序: JWT（最も信頼性が高い） → Header → Subdomain
 public class CompositeTenantResolver : ITenantResolver
 {
     private readonly IEnumerable<ITenantResolver> _resolvers;
@@ -952,6 +949,10 @@ public class CompositeTenantResolver : ITenantResolver
     
     public async Task<TenantResolutionResult> ResolveTenantAsync(HttpContext httpContext)
     {
+        // 優先順序に従って解決を試行
+        // 1. JwtClaimTenantResolver（認証済みユーザーのクレーム、最も信頼性が高い）
+        // 2. HeaderTenantResolver（明示的なヘッダー指定）
+        // 3. SubdomainTenantResolver（URLベース、最も一般的）
         foreach (var resolver in _resolvers)
         {
             var result = await resolver.ResolveTenantAsync(httpContext);
@@ -973,12 +974,15 @@ public class TenantResolverMiddleware
     private readonly ILogger<TenantResolverMiddleware> _logger;
     
     // システム管理者エンドポイント（テナント解決をバイパス）
+    // 注意: テナント解決のバイパスと認可チェックは別の関心事
+    // これらのエンドポイントには別途認可ミドルウェア（AuthorizationMiddleware）で
+    // システム管理者ロールのチェックを適用する必要がある
     private static readonly HashSet<string> _bypassPaths = new(StringComparer.OrdinalIgnoreCase)
     {
-        "/api/tenants",           // テナント管理API
-        "/api/system",            // システム管理API
-        "/health",                // ヘルスチェック
-        "/swagger"                // Swagger UI
+        "/api/tenants",           // テナント管理API（要認可チェック）
+        "/api/system",            // システム管理API（要認可チェック）
+        "/health",                // ヘルスチェック（認証不要）
+        "/swagger"                // Swagger UI（開発環境のみ）
     };
     
     public TenantResolverMiddleware(RequestDelegate next, ILogger<TenantResolverMiddleware> logger)
@@ -1135,8 +1139,39 @@ public class TenantDbContext : DbContext
     private static LambdaExpression GetTenantIdFilter<TEntity>(ITenantContext tenantContext)
         where TEntity : class, ITenantEntity
     {
-        Expression<Func<TEntity, bool>> filter = e => e.TenantId == tenantContext.TenantId.Value;
+        // テナント解決がされていない場合（システム管理者エンドポイント）は
+        // フィルターを適用しない（すべてのデータを返す）
+        Expression<Func<TEntity, bool>> filter = e => 
+            !tenantContext.IsResolved || e.TenantId == tenantContext.TenantId.Value;
         return filter;
+    }
+    
+    public override int SaveChanges()
+    {
+        // 保存時に自動的にTenantIdを設定
+        foreach (var entry in ChangeTracker.Entries<ITenantEntity>())
+        {
+            if (entry.State == EntityState.Added && _tenantContext.IsResolved)
+            {
+                entry.Entity.TenantId = _tenantContext.TenantId.Value;
+            }
+        }
+        
+        // 監査ログの不変性を保証（要件13.5, 13.6）
+        foreach (var entry in ChangeTracker.Entries<AuditLog>())
+        {
+            if (entry.State == EntityState.Modified)
+            {
+                throw new InvalidOperationException("Audit logs are immutable and cannot be modified");
+            }
+            
+            if (entry.State == EntityState.Deleted)
+            {
+                throw new InvalidOperationException("Audit logs cannot be deleted");
+            }
+        }
+        
+        return base.SaveChanges();
     }
     
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
