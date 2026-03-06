@@ -30,8 +30,9 @@
 1. WHEN 有効なテナント情報が提供される, THE Tenant_Management_System SHALL 一意のテナントIDを持つTenantエンティティを作成する
 2. THE Tenant_Management_System SHALL テナント名が1文字以上100文字以内であることを検証する
 3. THE Tenant_Management_System SHALL テナント識別子が英数字とハイフンのみで構成され、3文字以上50文字以内であることを検証する
-4. WHEN テナント識別子が既に存在する, THE Tenant_Management_System SHALL エラーを返す
-5. WHEN テナントが作成される, THE Tenant_Management_System SHALL 作成日時とアクティブ状態を記録する
+4. THE Tenant_Management_System SHALL テナント識別子を小文字に正規化して保存する（大文字小文字を区別しない）
+5. WHEN テナント識別子が既に存在する, THE Tenant_Management_System SHALL エラーを返す
+6. WHEN テナントが作成される, THE Tenant_Management_System SHALL 作成日時とアクティブ状態を記録する
 
 ### Requirement 2: テナントの取得
 
@@ -100,7 +101,7 @@
 2. THE Data_Isolation_Filter SHALL Entity Framework Coreのグローバルクエリフィルターとして実装される
 3. WHEN エンティティが保存される, THE Tenant_Management_System SHALL 現在のTenant_ContextからテナントIDを自動的に設定する
 4. THE Tenant_Management_System SHALL テナントIDを持つすべてのエンティティに対してData_Isolation_Filterを適用する
-5. WHEN システム管理者がマルチテナントデータにアクセスする, THE Tenant_Management_System SHALL フィルターを無効化するメカニズムを提供する
+5. WHEN システム管理者（"SystemAdmin"ロールを持つ認証済みユーザー）がマルチテナントデータにアクセスする, THE Tenant_Management_System SHALL フィルターを無効化するメカニズムを提供する
 
 ### Requirement 8: ユーザーとテナントの関連付け
 
@@ -110,7 +111,7 @@
 
 1. THE Tenant_Management_System SHALL .NET Core IdentityのUserエンティティを拡張してテナントIDを含める
 2. WHEN ユーザーが作成される, THE Tenant_Management_System SHALL 現在のTenant_ContextからテナントIDを設定する
-3. THE Tenant_Management_System SHALL ユーザーが複数のテナントに所属することを許可する設計を考慮する
+3. THE Tenant_Management_System SHALL ユーザーが単一テナントに所属する設計をMVPとして実装する（複数テナント所属は将来拡張として設計を考慮するが、MVP実装には含めない）
 4. WHEN ユーザーが認証される, THE Tenant_Management_System SHALL ユーザーのテナントIDをJWTクレームに含める
 
 ### Requirement 9: テナント設定の管理
@@ -189,6 +190,9 @@
 
 1. THE Tenant_Resolver SHALL テナント識別を10ミリ秒以内に完了する
 2. THE Tenant_Repository SHALL テナント取得クエリにインデックスを使用する
+3. THE Tenant_Management_System SHALL テナント作成・更新操作を500ミリ秒以内に完了する
+4. THE Tenant_Management_System SHALL テナント一覧取得（ページサイズ50）を200ミリ秒以内に完了する
+5. THE Tenant_Management_System SHALL 監査ログ書き込みがメイン操作のレスポンスタイムに50ミリ秒以上の影響を与えないようにする
 
 ### Security
 
