@@ -92,10 +92,10 @@ graph TB
     IAM -->|ユーザー操作| AUDIT
     TM -.->|将来の統合<br/>ドメインイベント| EXT
     
-    style TM fill:#e1f5ff,stroke:#01579b,stroke-width:3px
-    style IAM fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style AUDIT fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    style EXT fill:#f1f8e9,stroke:#33691e,stroke-width:2px,stroke-dasharray: 5 5
+    style TM fill:#1e3a5f,stroke:#4a9eff,stroke-width:3px,color:#ffffff
+    style IAM fill:#3d2817,stroke:#ff9800,stroke-width:2px,color:#ffffff
+    style AUDIT fill:#2d1b3d,stroke:#9c27b0,stroke-width:2px,color:#ffffff
+    style EXT fill:#1f2e1b,stroke:#66bb6a,stroke-width:2px,stroke-dasharray: 5 5,color:#ffffff
 ```
 
 #### 境界コンテキストの説明
