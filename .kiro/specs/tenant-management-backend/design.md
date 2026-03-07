@@ -13,11 +13,11 @@
 
 ### 技術スタック
 
-- **言語**: C# 12
-- **フレームワーク**: .NET 8
+- **言語**: C# 13
+- **フレームワーク**: .NET 10
 - **認証**: ASP.NET Core Identity
-- **ORM**: Entity Framework Core 8
-- **データベース**: SQL Server（または任意のEF Core対応RDBMS）
+- **ORM**: Entity Framework Core 10
+- **データベース**: PostgreSQL
 
 ## Architecture
 
@@ -295,6 +295,281 @@ TenantManagement.sln
     └── TenantManagement.API.Tests/                 # API統合テスト
         └── Controllers/
             └── TenantsControllerTests.cs
+```
+
+#### NuGetパッケージ構成（複数アプリケーション共有用）
+
+本設計は、複数のアプリケーションで共有できるように、以下のNuGetパッケージ構成を推奨します：
+
+```
+1. TenantManagement.Domain (完全共有・フレームワーク非依存)
+   ├── Aggregates/
+   │   └── TenantAggregate/
+   ├── ValueObjects/
+   ├── Events/
+   ├── Repositories/ (インターフェースのみ)
+   ├── Services/
+   ├── Exceptions/
+   └── Common/
+   
+   依存: なし（純粋なC#）
+
+2. TenantManagement.Application (完全共有・抽象化済み)
+   ├── Services/
+   ├── DTOs/
+   ├── Interfaces/
+   │   ├── ITenantContext.cs
+   │   ├── ICurrentUserProvider.cs (抽象化)
+   │   ├── IAuditService.cs
+   │   └── IUnitOfWork.cs
+   ├── Mappings/
+   └── Validators/
+   
+   依存: TenantManagement.Domain
+
+3. TenantManagement.Infrastructure.Core (共有基盤)
+   ├── Persistence/
+   │   ├── TenantDbContext.cs
+   │   ├── Configurations/
+   │   ├── Repositories/
+   │   └── Interceptors/
+   ├── Identity/
+   │   └── ApplicationUser.cs
+   ├── Services/
+   │   ├── TenantContext.cs
+   │   └── UnitOfWork.cs
+   └── Abstractions/
+       └── ITenantResolver<TContext>.cs (ジェネリック版)
+   
+   依存: TenantManagement.Domain, TenantManagement.Application, EF Core
+
+4. TenantManagement.Infrastructure.AspNetCore (ASP.NET Core専用)
+   ├── TenantResolution/
+   │   ├── SubdomainTenantResolver.cs
+   │   ├── HeaderTenantResolver.cs
+   │   ├── JwtClaimTenantResolver.cs
+   │   └── CompositeTenantResolver.cs
+   ├── Middleware/
+   │   └── TenantResolverMiddleware.cs
+   ├── Providers/
+   │   └── HttpContextCurrentUserProvider.cs (ICurrentUserProvider実装)
+   └── Extensions/
+       └── ServiceCollectionExtensions.cs
+   
+   依存: TenantManagement.Infrastructure.Core, ASP.NET Core
+
+5. TenantManagement.Infrastructure.Blazor (Blazor専用・将来拡張)
+   ├── TenantResolution/
+   │   └── BlazorTenantResolver.cs
+   ├── Providers/
+   │   └── BlazorCurrentUserProvider.cs
+   └── Components/
+       └── TenantSelectorComponent.razor
+   
+   依存: TenantManagement.Infrastructure.Core, Blazor
+
+6. TenantManagement.Infrastructure.Console (コンソールアプリ専用・将来拡張)
+   ├── TenantResolution/
+   │   └── ConfigurationTenantResolver.cs
+   └── Providers/
+       └── ConfigurationCurrentUserProvider.cs
+   
+   依存: TenantManagement.Infrastructure.Core
+```
+
+#### ICurrentUserProvider実装例（各プラットフォーム用）
+
+**ASP.NET Core用実装:**
+```csharp
+// TenantManagement.Infrastructure.AspNetCore/Providers/HttpContextCurrentUserProvider.cs
+public class HttpContextCurrentUserProvider : ICurrentUserProvider
+{
+    private readonly IHttpContextAccessor _httpContextAccessor;
+    
+    public HttpContextCurrentUserProvider(IHttpContextAccessor httpContextAccessor)
+    {
+        _httpContextAccessor = httpContextAccessor;
+    }
+    
+    public Guid? GetUserId()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        var userIdClaim = httpContext?.User?.FindFirst(ClaimTypes.NameIdentifier);
+        return userIdClaim != null && Guid.TryParse(userIdClaim.Value, out var userId) 
+            ? userId 
+            : null;
+    }
+    
+    public string GetUserName()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        return httpContext?.User?.Identity?.Name ?? "Anonymous";
+    }
+    
+    public string GetIpAddress()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        return httpContext?.Connection?.RemoteIpAddress?.ToString();
+    }
+    
+    public string GetUserAgent()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        return httpContext?.Request?.Headers["User-Agent"].ToString();
+    }
+}
+```
+
+**Blazor Server用実装:**
+```csharp
+// TenantManagement.Infrastructure.Blazor/Providers/BlazorCurrentUserProvider.cs
+public class BlazorCurrentUserProvider : ICurrentUserProvider
+{
+    private readonly AuthenticationStateProvider _authenticationStateProvider;
+    private readonly IHttpContextAccessor _httpContextAccessor; // Blazor Serverの場合
+    
+    public BlazorCurrentUserProvider(
+        AuthenticationStateProvider authenticationStateProvider,
+        IHttpContextAccessor httpContextAccessor)
+    {
+        _authenticationStateProvider = authenticationStateProvider;
+        _httpContextAccessor = httpContextAccessor;
+    }
+    
+    public Guid? GetUserId()
+    {
+        var authState = _authenticationStateProvider.GetAuthenticationStateAsync().Result;
+        var userIdClaim = authState.User.FindFirst(ClaimTypes.NameIdentifier);
+        return userIdClaim != null && Guid.TryParse(userIdClaim.Value, out var userId) 
+            ? userId 
+            : null;
+    }
+    
+    public string GetUserName()
+    {
+        var authState = _authenticationStateProvider.GetAuthenticationStateAsync().Result;
+        return authState.User.Identity?.Name ?? "Anonymous";
+    }
+    
+    public string GetIpAddress()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        return httpContext?.Connection?.RemoteIpAddress?.ToString() ?? "Unknown";
+    }
+    
+    public string GetUserAgent()
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        return httpContext?.Request?.Headers["User-Agent"].ToString() ?? "Unknown";
+    }
+}
+```
+
+**コンソールアプリ用実装:**
+```csharp
+// TenantManagement.Infrastructure.Console/Providers/ConfigurationCurrentUserProvider.cs
+public class ConfigurationCurrentUserProvider : ICurrentUserProvider
+{
+    private readonly IConfiguration _configuration;
+    
+    public ConfigurationCurrentUserProvider(IConfiguration configuration)
+    {
+        _configuration = configuration;
+    }
+    
+    public Guid? GetUserId()
+    {
+        var userIdStr = _configuration["BatchUser:UserId"];
+        return Guid.TryParse(userIdStr, out var userId) ? userId : null;
+    }
+    
+    public string GetUserName()
+    {
+        return _configuration["BatchUser:UserName"] ?? "BatchProcess";
+    }
+    
+    public string GetIpAddress()
+    {
+        return "127.0.0.1"; // ローカル実行
+    }
+    
+    public string GetUserAgent()
+    {
+        return "ConsoleApplication/1.0";
+    }
+}
+```
+
+#### 使用例（各アプリケーションタイプ）
+
+**ASP.NET Core Web API:**
+```csharp
+// Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+// 共有パッケージの登録
+builder.Services.AddTenantManagementDomain();
+builder.Services.AddTenantManagementApplication();
+builder.Services.AddTenantManagementInfrastructureCore(builder.Configuration);
+
+// ASP.NET Core専用の登録
+builder.Services.AddTenantManagementAspNetCore();
+builder.Services.AddScoped<ICurrentUserProvider, HttpContextCurrentUserProvider>();
+
+var app = builder.Build();
+
+// テナント解決ミドルウェア
+app.UseTenantResolver();
+
+app.Run();
+```
+
+**Blazor Server:**
+```csharp
+// Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+// 共有パッケージの登録
+builder.Services.AddTenantManagementDomain();
+builder.Services.AddTenantManagementApplication();
+builder.Services.AddTenantManagementInfrastructureCore(builder.Configuration);
+
+// Blazor専用の登録
+builder.Services.AddTenantManagementBlazor();
+builder.Services.AddScoped<ICurrentUserProvider, BlazorCurrentUserProvider>();
+
+var app = builder.Build();
+app.Run();
+```
+
+**コンソールアプリ（バッチ処理）:**
+```csharp
+// Program.cs
+var host = Host.CreateDefaultBuilder(args)
+    .ConfigureServices((context, services) =>
+    {
+        // 共有パッケージの登録
+        services.AddTenantManagementDomain();
+        services.AddTenantManagementApplication();
+        services.AddTenantManagementInfrastructureCore(context.Configuration);
+        
+        // コンソール専用の登録
+        services.AddTenantManagementConsole();
+        services.AddSingleton<ICurrentUserProvider, ConfigurationCurrentUserProvider>();
+        
+        // テナントを設定ファイルから解決
+        var tenantId = context.Configuration["Tenant:Id"];
+        var tenantIdentifier = context.Configuration["Tenant:Identifier"];
+        services.AddSingleton<ITenantContext>(sp =>
+        {
+            var tenantContext = new TenantContext();
+            tenantContext.SetTenant(Guid.Parse(tenantId), tenantIdentifier);
+            return tenantContext;
+        });
+    })
+    .Build();
+
+await host.RunAsync();
 ```
 
 #### レイヤー間の依存関係
@@ -661,6 +936,19 @@ public record TenantDeactivatedEvent(Guid TenantId) : IDomainEvent;
 
 ### Application Layer
 
+#### ICurrentUserProvider Interface（抽象化）
+
+```csharp
+// アプリケーション非依存の抽象インターフェース
+public interface ICurrentUserProvider
+{
+    Guid? GetUserId();
+    string GetUserName();
+    string GetIpAddress();
+    string GetUserAgent();
+}
+```
+
 #### ITenantContext Interface
 
 ```csharp
@@ -702,64 +990,26 @@ public class TenantContext : ITenantContext
 #### Application Service Example
 
 ```csharp
-// 監査ログ情報を取得するヘルパークラス
-public class AuditContextHelper
-{
-    private readonly IHttpContextAccessor _httpContextAccessor;
-    
-    public AuditContextHelper(IHttpContextAccessor httpContextAccessor)
-    {
-        _httpContextAccessor = httpContextAccessor;
-    }
-    
-    public Guid? GetCurrentUserId()
-    {
-        var httpContext = _httpContextAccessor.HttpContext;
-        var userIdClaim = httpContext?.User?.FindFirst(ClaimTypes.NameIdentifier);
-        return userIdClaim != null && Guid.TryParse(userIdClaim.Value, out var userId) 
-            ? userId 
-            : null;
-    }
-    
-    public string GetCurrentUserName()
-    {
-        var httpContext = _httpContextAccessor.HttpContext;
-        return httpContext?.User?.Identity?.Name ?? "Anonymous";
-    }
-    
-    public string GetIpAddress()
-    {
-        var httpContext = _httpContextAccessor.HttpContext;
-        return httpContext?.Connection?.RemoteIpAddress?.ToString();
-    }
-    
-    public string GetUserAgent()
-    {
-        var httpContext = _httpContextAccessor.HttpContext;
-        return httpContext?.Request?.Headers["User-Agent"].ToString();
-    }
-}
-
 public class TenantApplicationService
 {
     private readonly ITenantRepository _tenantRepository;
     private readonly IAuditLogRepository _auditLogRepository;
     private readonly IUnitOfWork _unitOfWork;
     private readonly ITenantContext _tenantContext;
-    private readonly AuditContextHelper _auditContextHelper;
+    private readonly ICurrentUserProvider _currentUserProvider;
     
     public TenantApplicationService(
         ITenantRepository tenantRepository,
         IAuditLogRepository auditLogRepository,
         IUnitOfWork unitOfWork,
         ITenantContext tenantContext,
-        AuditContextHelper auditContextHelper)
+        ICurrentUserProvider currentUserProvider)
     {
         _tenantRepository = tenantRepository;
         _auditLogRepository = auditLogRepository;
         _unitOfWork = unitOfWork;
         _tenantContext = tenantContext;
-        _auditContextHelper = auditContextHelper;
+        _currentUserProvider = currentUserProvider;
     }
     
     public async Task<TenantDto> CreateTenantAsync(CreateTenantCommand command, CancellationToken cancellationToken)
@@ -778,15 +1028,15 @@ public class TenantApplicationService
         
         // 監査ログを同一トランザクション内で記録
         var auditLog = AuditLog.Create(
-            userId: _auditContextHelper.GetCurrentUserId(),
-            userName: _auditContextHelper.GetCurrentUserName(),
+            userId: _currentUserProvider.GetUserId(),
+            userName: _currentUserProvider.GetUserName(),
             tenantId: _tenantContext.TenantId,
             entityType: nameof(Tenant),
             entityId: tenant.Id,
             action: AuditAction.Created,
             changes: $"Created tenant: {tenant.Name}",
-            ipAddress: _auditContextHelper.GetIpAddress(),
-            userAgent: _auditContextHelper.GetUserAgent());
+            ipAddress: _currentUserProvider.GetIpAddress(),
+            userAgent: _currentUserProvider.GetUserAgent());
         
         await _auditLogRepository.AddAsync(auditLog, cancellationToken);
         
@@ -813,16 +1063,16 @@ public class AuditService : IAuditService
 {
     private readonly IAuditLogRepository _auditLogRepository;
     private readonly ITenantContext _tenantContext;
-    private readonly AuditContextHelper _auditContextHelper;
+    private readonly ICurrentUserProvider _currentUserProvider;
     
     public AuditService(
         IAuditLogRepository auditLogRepository,
         ITenantContext tenantContext,
-        AuditContextHelper auditContextHelper)
+        ICurrentUserProvider currentUserProvider)
     {
         _auditLogRepository = auditLogRepository;
         _tenantContext = tenantContext;
-        _auditContextHelper = auditContextHelper;
+        _currentUserProvider = currentUserProvider;
     }
     
     public async Task LogAsync(
@@ -833,15 +1083,15 @@ public class AuditService : IAuditService
         CancellationToken cancellationToken = default)
     {
         var auditLog = AuditLog.Create(
-            userId: _auditContextHelper.GetCurrentUserId(),
-            userName: _auditContextHelper.GetCurrentUserName(),
+            userId: _currentUserProvider.GetUserId(),
+            userName: _currentUserProvider.GetUserName(),
             tenantId: _tenantContext.TenantId,
             entityType: entityType,
             entityId: entityId,
             action: action,
             changes: changes,
-            ipAddress: _auditContextHelper.GetIpAddress(),
-            userAgent: _auditContextHelper.GetUserAgent());
+            ipAddress: _currentUserProvider.GetIpAddress(),
+            userAgent: _currentUserProvider.GetUserAgent());
         
         await _auditLogRepository.AddAsync(auditLog, cancellationToken);
         // 注意: コミットは呼び出し元で行う（トランザクション境界を呼び出し元が制御）
@@ -851,15 +1101,21 @@ public class AuditService : IAuditService
 
 ### Infrastructure Layer
 
-#### ITenantResolver Interface
+#### ITenantResolver Interface（抽象化）
 
 ```csharp
-public interface ITenantResolver
+// ジェネリック版のテナント解決インターフェース
+public interface ITenantResolver<TContext>
 {
-    Task<TenantResolutionResult> ResolveTenantAsync(HttpContext httpContext);
+    Task<TenantResolutionResult> ResolveTenantAsync(TContext context);
 }
 
 public record TenantResolutionResult(bool Success, string Identifier, string ErrorMessage = null);
+
+// 後方互換性のための非ジェネリック版（ASP.NET Core用）
+public interface ITenantResolver : ITenantResolver<HttpContext>
+{
+}
 ```
 
 #### Tenant Resolver Implementations

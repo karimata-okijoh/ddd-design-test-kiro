@@ -2,7 +2,7 @@
 
 ## Introduction
 
-このドキュメントは、マルチテナント対応の業務アプリケーションバックエンドにおけるテナント管理機能の要件を定義します。本機能は、複数の組織（テナント）が独立したデータ空間を持ちながら、同一のアプリケーションインスタンスを共有できるようにします。DDD（ドメイン駆動設計）アーキテクチャを採用し、C#/.NET Core Identityを基盤として実装されます。
+このドキュメントは、マルチテナント対応の業務アプリケーションバックエンドにおけるテナント管理機能の要件を定義します。本機能は、複数の組織（テナント）が独立したデータ空間を持ちながら、同一のアプリケーションインスタンスを共有できるようにします。DDD（ドメイン駆動設計）アーキテクチャを採用し、C#/.NET 10、ASP.NET Core Identityを基盤として実装されます。
 
 ## Glossary
 
@@ -10,7 +10,7 @@
 - **Tenant**: アプリケーションを利用する組織単位。独立したデータ空間とユーザーグループを持つ
 - **Tenant_Repository**: テナントエンティティの永続化を担当するリポジトリ
 - **Tenant_Service**: テナント関連のビジネスロジックを実行するドメインサービス
-- **User**: .NET Core Identityで管理される認証済みユーザー
+- **User**: ASP.NET Core Identityで管理される認証済みユーザー
 - **Tenant_Context**: 現在のリクエストに関連付けられたテナント情報
 - **Tenant_Resolver**: HTTPリクエストからテナントを識別するコンポーネント
 - **Tenant_Identifier**: テナントを一意に識別する値（例: サブドメイン、ヘッダー、クレーム）
@@ -109,7 +109,7 @@
 
 #### Acceptance Criteria
 
-1. THE Tenant_Management_System SHALL .NET Core IdentityのUserエンティティを拡張してテナントIDを含める
+1. THE Tenant_Management_System SHALL ASP.NET Core IdentityのUserエンティティを拡張してテナントIDを含める
 2. WHEN ユーザーが作成される, THE Tenant_Management_System SHALL 現在のTenant_ContextからテナントIDを設定する
 3. THE Tenant_Management_System SHALL ユーザーが単一テナントに所属する設計をMVPとして実装する（複数テナント所属は将来拡張として設計を考慮するが、MVP実装には含めない）
 4. WHEN ユーザーが認証される, THE Tenant_Management_System SHALL ユーザーのテナントIDをJWTクレームに含める
